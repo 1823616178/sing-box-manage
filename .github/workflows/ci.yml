@@ -1,0 +1,40 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+      - name: Install sing-box for integration tests
+        env:
+          SING_BOX_VERSION: "1.13.0"
+        run: |
+          archive="sing-box-${SING_BOX_VERSION}-linux-amd64"
+          curl --fail --location --retry 3 \
+            "https://github.com/SagerNet/sing-box/releases/download/v${SING_BOX_VERSION}/${archive}.tar.gz" \
+            --output "${RUNNER_TEMP}/${archive}.tar.gz"
+          tar -xzf "${RUNNER_TEMP}/${archive}.tar.gz" -C "${RUNNER_TEMP}"
+          echo "${RUNNER_TEMP}/${archive}" >> "$GITHUB_PATH"
+      - name: Install project
+        run: python -m pip install -e ".[dev]"
+      - name: Lint
+        run: |
+          ruff check .
+          ruff format --check .
+          mypy
+      - name: Test
+        run: pytest --cov=singbox_manage --cov-report=term-missing --cov-fail-under=75
