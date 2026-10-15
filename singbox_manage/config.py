@@ -91,13 +91,18 @@ def fsync_file(path: Path) -> None:
         os.fsync(file.fileno())
 
 
-def write_json_atomic(data: dict[str, Any], path: Path) -> None:
-    """Write JSON atomically without creating a backup."""
+@contextmanager
+def _staged_json_write(data: dict[str, Any], path: Path) -> Iterator[Path]:
+    """将 JSON 写入 path 同目录的临时文件并 yield 其路径。
+
+    调用方在 yield 期间完成校验，再把临时文件原子替换到目标位置；
+    临时文件在任何情况下都会被清理（替换成功后原路径已不存在，清理自动跳过）。
+    """
 
     path = resolve_config_path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     existing_stat = path.stat() if path.exists() else None
-    temporary_path: Path | None = None
+    staged: Path | None = None
     try:
         with tempfile.NamedTemporaryFile(
             "w",
@@ -107,18 +112,27 @@ def write_json_atomic(data: dict[str, Any], path: Path) -> None:
             suffix=".tmp",
             delete=False,
         ) as temporary:
-            temporary_path = Path(temporary.name)
+            staged = Path(temporary.name)
             json.dump(data, temporary, indent=2, ensure_ascii=False)
             temporary.write("\n")
             temporary.flush()
             os.fsync(temporary.fileno())
-        preserve_file_metadata(temporary_path, existing_stat)
-        fsync_file(temporary_path)
-        os.replace(temporary_path, path)
-        fsync_directory(path.parent)
+        assert staged is not None
+        preserve_file_metadata(staged, existing_stat)
+        fsync_file(staged)
+        yield staged
     finally:
-        if temporary_path and temporary_path.exists():
-            temporary_path.unlink()
+        if staged is not None and staged.exists():
+            staged.unlink()
+
+
+def write_json_atomic(data: dict[str, Any], path: Path) -> None:
+    """Write JSON atomically without creating a backup."""
+
+    path = resolve_config_path(path)
+    with _staged_json_write(data, path) as staged:
+        os.replace(staged, path)
+        fsync_directory(path.parent)
 
 
 def find_proxy_selector(config: dict[str, Any], selector_tag: str) -> dict[str, Any] | None:
@@ -167,43 +181,18 @@ def run_sing_box_check(
 
 def dump_json_atomic(data: dict[str, Any], config_path: Path, validate: bool) -> tuple[Path | None, str | None]:
     config_path = resolve_config_path(config_path)
-    parent = config_path.parent
-    parent.mkdir(parents=True, exist_ok=True)
-    existing_stat = config_path.stat() if config_path.exists() else None
-    tmp_name = None
-
-    try:
-        with tempfile.NamedTemporaryFile(
-            "w",
-            encoding="utf-8",
-            dir=parent,
-            prefix=f".{config_path.name}.",
-            suffix=".tmp",
-            delete=False,
-        ) as tmp:
-            tmp_name = Path(tmp.name)
-            json.dump(data, tmp, indent=2, ensure_ascii=False)
-            tmp.write("\n")
-            tmp.flush()
-            os.fsync(tmp.fileno())
-
-        preserve_file_metadata(tmp_name, existing_stat)
-        fsync_file(tmp_name)
-
+    with _staged_json_write(data, config_path) as staged:
         validation_message = None
         if validate:
-            ok, validation_message = run_sing_box_check(tmp_name)
+            ok, validation_message = run_sing_box_check(staged)
             if not ok:
                 raise RuntimeError(f"配置校验失败: {validation_message}")
 
         # 校验通过后再备份，避免校验失败时留下无意义的备份文件
         backup_path = backup_config(config_path)
-        os.replace(tmp_name, config_path)
-        fsync_directory(parent)
+        os.replace(staged, config_path)
+        fsync_directory(config_path.parent)
         return backup_path, validation_message
-    finally:
-        if tmp_name and tmp_name.exists():
-            tmp_name.unlink()
 
 
 @contextmanager

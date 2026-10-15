@@ -2,7 +2,6 @@
 
 import time
 from collections.abc import Callable
-from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
@@ -47,7 +46,7 @@ PUBLIC_IP_CACHE_TTL = 300.0
 class SingBoxTUI(App):
     CSS = """
     Screen { align: center middle; }
-    #main { width: 96; height: auto; border: solid green; padding: 1 2; }
+    #main { width: 1fr; max-width: 96; height: auto; border: solid green; padding: 1 2; }
     #title { text-align: center; text-style: bold; color: $primary; }
     #subtitle { text-align: center; margin-bottom: 1; }
     #node-section { height: auto; margin-bottom: 1; }
@@ -242,6 +241,10 @@ class SingBoxTUI(App):
         else:
             status.remove_class("error")
 
+    def _set_action_buttons_disabled(self, disabled: bool) -> None:
+        for button in self.query(Button):
+            button.disabled = disabled
+
     # ------------------------------------------------------------------
     # 运行状态（子进程调用全部放到线程 worker，避免阻塞界面）
     # ------------------------------------------------------------------
@@ -254,13 +257,24 @@ class SingBoxTUI(App):
         cached_ip = None
         if not force_ip and self._public_ip is not None and now - self._public_ip_at < PUBLIC_IP_CACHE_TTL:
             cached_ip = self._public_ip
-        return self._runtime_info_worker(self._runtime_generation, deepcopy(self.config), cached_ip, self._public_ip_at)
+        # 只把 worker 真正需要的 TUN 快照传过去，避免深拷贝整个配置
+        config = self.config
+        interface_name = get_tun_interface_name(config, self.tun_tag)
+        ip_stack_mode = get_sing_box_ip_stack(config, self.tun_tag)
+        return self._runtime_info_worker(
+            self._runtime_generation,
+            interface_name,
+            ip_stack_mode,
+            cached_ip,
+            self._public_ip_at,
+        )
 
     @work(thread=True, exclusive=True, group="runtime-info")
     def _runtime_info_worker(
         self,
         generation: int,
-        config: dict[str, Any] | None,
+        interface_name: str,
+        ip_stack_mode: str,
         cached_ip: str | None,
         cached_ip_at: float,
     ):
@@ -268,10 +282,9 @@ class SingBoxTUI(App):
         public_ip_at = cached_ip_at if cached_ip is not None else time.monotonic()
         system_memory = get_system_memory_usage()
         service_memory = get_service_memory_usage(self.service_name)
-        interface_name = get_tun_interface_name(config, self.tun_tag)
         tun_status = get_tun_link_status(interface_name)
         dns_status = get_dns_tun_status(interface_name)
-        ip_stack_status = format_ip_stack_mode(get_sing_box_ip_stack(config, self.tun_tag))
+        ip_stack_status = format_ip_stack_mode(ip_stack_mode)
         runtime_text = f"出口 IPv4: {public_ip} | 系统内存: {system_memory} | sing-box 内存: {service_memory}"
         network_text = f"TUN: {tun_status} ({interface_name}) | DNS 走 TUN: {dns_status} | IP 栈: {ip_stack_status}"
         if not get_current_worker().is_cancelled:
@@ -430,6 +443,7 @@ class SingBoxTUI(App):
             self.show_status("上一个操作尚未完成，请稍候", error=True)
             return
         self._busy = True
+        self._set_action_buttons_disabled(True)
         self.show_status(f"正在应用: {success_label}…")
         self._config_change_worker(save_operation, success_label, failure_prefix)
 
@@ -482,6 +496,7 @@ class SingBoxTUI(App):
 
     def _finish_config_change(self, save_result: SaveResult, message: str, error: bool):
         self._busy = False
+        self._set_action_buttons_disabled(False)
         self._ingest_config(save_result.config)
         self.update_node_table()
         self.update_mode_buttons()
@@ -491,4 +506,5 @@ class SingBoxTUI(App):
 
     def _finish_busy_error(self, message: str):
         self._busy = False
+        self._set_action_buttons_disabled(False)
         self.show_status(message, error=True)
