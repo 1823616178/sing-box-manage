@@ -9,7 +9,8 @@ from rich.text import Text
 from textual import work
 from textual.app import App, ComposeResult
 from textual.containers import Horizontal, Vertical
-from textual.widgets import Button, DataTable, Footer, Header, Static
+from textual.screen import ModalScreen
+from textual.widgets import Button, DataTable, Footer, Header, Input, Static
 from textual.worker import get_current_worker
 
 from .config import (
@@ -43,6 +44,40 @@ from .runtime import (
 PUBLIC_IP_CACHE_TTL = 300.0
 
 
+class ConfirmScreen(ModalScreen[bool]):
+    """二次确认弹窗，dismiss 时返回 True（确认）或 False（取消）。"""
+
+    def __init__(self, message: str) -> None:
+        super().__init__()
+        self._message = message
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="confirm-dialog"):
+            yield Static(self._message, id="confirm-message")
+            with Horizontal(id="confirm-buttons"):
+                yield Button("确认", id="confirm-yes", variant="error")
+                yield Button("取消", id="confirm-no", variant="primary")
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        self.dismiss(event.button.id == "confirm-yes")
+
+
+class HelpScreen(ModalScreen[None]):
+    """快捷键帮助弹窗。"""
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="help-dialog"):
+            yield Static("⌨️ 快捷键", classes="section-title")
+            yield Static(
+                "↑↓ 选择节点\n回车/空格 切换节点\n/ 聚焦节点搜索框\nr 刷新状态\n? 显示本帮助\nq 退出",
+                id="help-text",
+            )
+            yield Button("关闭", id="help-close", variant="primary")
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        self.dismiss(None)
+
+
 class SingBoxTUI(App):
     CSS = """
     Screen { align: center middle; }
@@ -53,18 +88,29 @@ class SingBoxTUI(App):
     #mode-section { height: auto; margin-bottom: 1; }
     #status { text-align: center; color: $success; margin-top: 1; }
     #status.error { color: $error; }
-    #runtime-info { text-align: center; color: $text-muted; margin-bottom: 1; }
-    #network-info { text-align: center; color: $text-muted; margin-bottom: 1; }
+    #status-panel { height: auto; border: solid $primary; padding: 0 1; margin-bottom: 1; }
+    #runtime-info { text-align: center; color: $text-muted; }
+    #network-info { text-align: center; color: $text-muted; }
+    #network-info.error { color: $error; text-style: bold; }
+    #network-info.warning { color: $warning; }
+    #node-filter { margin-bottom: 1; }
     DataTable { height: 10; }
     .section-title { text-style: bold; color: $secondary; margin-bottom: 1; }
     #mode-section Horizontal { height: auto; }
     Button { margin: 0 1; }
+    #confirm-dialog { width: 60; height: auto; border: solid $warning; padding: 1 2; }
+    #confirm-message { text-align: center; margin-bottom: 1; }
+    #confirm-buttons { height: auto; align: center middle; }
+    #help-dialog { width: 46; height: auto; border: solid $primary; padding: 1 2; }
+    #help-text { margin-bottom: 1; }
     """
 
     BINDINGS = [
         ("q", "quit", "退出"),
         ("r", "refresh", "刷新状态"),
         ("space", "select_highlighted_node", "切换节点"),
+        ("/", "focus_filter", "搜索节点"),
+        ("?", "show_help", "帮助"),
     ]
 
     def __init__(
@@ -93,6 +139,8 @@ class SingBoxTUI(App):
         self.current_node = ""
         self.proxy_mode = ""
         self.nodes: list[str] = []
+        self.visible_nodes: list[str] = []
+        self._node_filter = ""
         self._busy = False
         self._public_ip: str | None = None
         self._public_ip_at = 0.0
@@ -103,14 +151,17 @@ class SingBoxTUI(App):
         with Vertical(id="main"):
             yield Static("sing-box 节点切换工具", id="title")
             yield Static(
-                "使用 ↑↓ 选择节点，回车/空格切换 | Tab切换区域 | r刷新 | q退出",
+                "↑↓ 选择节点 | 回车/空格切换 | /搜索 | r刷新 | ?帮助 | q退出",
                 id="subtitle",
             )
-            yield Static("正在获取运行状态…", id="runtime-info")
-            yield Static("", id="network-info")
+            with Vertical(id="status-panel"):
+                yield Static("🖥️ 运行状态", classes="section-title")
+                yield Static("正在获取运行状态…", id="runtime-info")
+                yield Static("", id="network-info")
 
             with Vertical(id="node-section"):
                 yield Static("📡 代理节点", classes="section-title")
+                yield Input(placeholder="输入过滤节点…", id="node-filter")
                 table: DataTable[Any] = DataTable(id="node-table")
                 table.cursor_type = "row"
                 yield table
@@ -144,6 +195,7 @@ class SingBoxTUI(App):
         self.selector = None
         self.inbounds = {}
         self.nodes = []
+        self.visible_nodes = []
         self.current_node = ""
         self.proxy_mode = "unknown"
 
@@ -178,17 +230,28 @@ class SingBoxTUI(App):
     # 界面更新
     # ------------------------------------------------------------------
 
-    def update_node_table(self):
+    def update_node_table(self, focus: bool = True):
         table = self.query_one("#node-table", DataTable)
         table.clear(columns=True)
         table.add_columns("状态", "节点名称")
+        keyword = self._node_filter.lower()
+        self.visible_nodes = [node for node in self.nodes if keyword in node.lower()]
         if not self.nodes:
             table.add_row("!", f"未找到 {self.selector_tag} selector 或节点列表为空")
-            return
-        for idx, node in enumerate(self.nodes):
+        elif not self.visible_nodes:
+            table.add_row("!", f"没有匹配 [{self._node_filter}] 的节点")
+        for idx, node in enumerate(self.visible_nodes):
             marker = "✅" if node == self.current_node else "  "
             table.add_row(marker, node, key=str(idx))
-        table.focus()
+        if focus:
+            table.focus()
+
+    def on_input_changed(self, event: Input.Changed) -> None:
+        if event.input.id != "node-filter":
+            return
+        self._node_filter = event.value.strip()
+        # 过滤时不抢焦点，让用户可以连续输入
+        self.update_node_table(focus=False)
 
     def update_mode_buttons(self):
         btn_sys = self.query_one("#btn-system", Button)
@@ -265,6 +328,7 @@ class SingBoxTUI(App):
             self._runtime_generation,
             interface_name,
             ip_stack_mode,
+            self.proxy_mode,
             cached_ip,
             self._public_ip_at,
         )
@@ -275,6 +339,7 @@ class SingBoxTUI(App):
         generation: int,
         interface_name: str,
         ip_stack_mode: str,
+        proxy_mode: str,
         cached_ip: str | None,
         cached_ip_at: float,
     ):
@@ -287,6 +352,13 @@ class SingBoxTUI(App):
         ip_stack_status = format_ip_stack_mode(ip_stack_mode)
         runtime_text = f"出口 IPv4: {public_ip} | 系统内存: {system_memory} | sing-box 内存: {service_memory}"
         network_text = f"TUN: {tun_status} ({interface_name}) | DNS 走 TUN: {dns_status} | IP 栈: {ip_stack_status}"
+        # TUN 模式下链路 DOWN 是故障，DNS 未走 TUN 是告警；其他模式下属于正常现象
+        if proxy_mode == "tun" and tun_status != "UP":
+            network_state = "error"
+        elif proxy_mode == "tun" and dns_status == "否":
+            network_state = "warning"
+        else:
+            network_state = "ok"
         if not get_current_worker().is_cancelled:
             self.call_from_thread(
                 self._render_runtime_info,
@@ -295,6 +367,7 @@ class SingBoxTUI(App):
                 public_ip_at,
                 runtime_text,
                 network_text,
+                network_state,
             )
 
     def _render_runtime_info(
@@ -304,13 +377,18 @@ class SingBoxTUI(App):
         public_ip_at: float,
         runtime_text: str,
         network_text: str,
+        network_state: str,
     ):
         if generation != self._runtime_generation:
             return
         self._public_ip = public_ip
         self._public_ip_at = public_ip_at
         self.query_one("#runtime-info", Static).update(runtime_text)
-        self.query_one("#network-info", Static).update(network_text)
+        network_widget = self.query_one("#network-info", Static)
+        network_widget.update(network_text)
+        network_widget.remove_class("error", "warning")
+        if network_state in ("error", "warning"):
+            network_widget.add_class(network_state)
 
     # ------------------------------------------------------------------
     # 动作
@@ -328,6 +406,12 @@ class SingBoxTUI(App):
         table = self.query_one("#node-table", DataTable)
         if table.cursor_row is not None:
             self._select_node_by_index(table.cursor_row)
+
+    def action_focus_filter(self) -> None:
+        self.query_one("#node-filter", Input).focus()
+
+    def action_show_help(self) -> None:
+        self.push_screen(HelpScreen())
 
     def on_data_table_row_selected(self, event: DataTable.RowSelected):
         if not self.selector:
@@ -358,9 +442,9 @@ class SingBoxTUI(App):
         if not self.config:
             self.show_status("配置尚未成功加载", error=True)
             return
-        if not self.selector or not (0 <= idx < len(self.nodes)):
+        if not self.selector or not (0 <= idx < len(self.visible_nodes)):
             return
-        selected = self.nodes[idx]
+        selected = self.visible_nodes[idx]
 
         def mutate(data):
             selector = find_proxy_selector(data, self.selector_tag)
@@ -386,6 +470,9 @@ class SingBoxTUI(App):
             self.show_status("配置尚未成功加载", error=True)
             return
         label = format_ip_stack_mode(mode)
+        if mode == get_sing_box_ip_stack(self.config, self.tun_tag):
+            self.show_status(f"IP 栈已经是 {label}")
+            return
 
         def save_operation() -> SaveResult:
             return save_ip_stack_config(
@@ -396,10 +483,18 @@ class SingBoxTUI(App):
                 backup_keep=self.backup_keep,
             )
 
-        self._apply_save_operation(
-            save_operation,
-            f"切换 IP 栈为 {label}",
-            "切换 IP 栈失败",
+        def on_confirm(confirmed: bool | None) -> None:
+            if confirmed:
+                self._apply_save_operation(
+                    save_operation,
+                    f"切换 IP 栈为 {label}",
+                    "切换 IP 栈失败",
+                )
+
+        # IP 栈切换会重启 sing-box 服务，先二次确认
+        self.push_screen(
+            ConfirmScreen(f"切换 IP 栈为 {label} 将重启 sing-box 服务，确定继续吗？"),
+            on_confirm,
         )
 
     def set_mode(self, mode: str):

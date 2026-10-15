@@ -686,6 +686,8 @@ def test_tui_saves_node_and_ip_stack_changes_without_certificate_controls(tmp_pa
             await wait_until(lambda: not app._busy)
             assert app.current_node == "node-b"
             await pilot.click("#btn-ipv4")
+            await pilot.pause()
+            await pilot.click("#confirm-yes")
             await wait_until(lambda: not app._busy)
             assert network.get_sing_box_ip_stack(store.load_config(app.config_path), "tun-in") == "ipv4"
             await pilot.click("#btn-tun")
@@ -705,8 +707,78 @@ def test_tui_repairs_ip_stack_inconsistent_with_dns(tmp_path, monkeypatch):
         async with app.run_test(size=(120, 40)) as pilot:
             await pilot.pause()
             await pilot.click("#btn-ipv4")
+            await pilot.pause()
+            await pilot.click("#confirm-yes")
             await wait_until(lambda: not app._busy)
             assert store.load_config(app.config_path)["inbounds"][1]["address"] == ["172.19.0.1/30"]
+
+    asyncio.run(exercise())
+
+
+def test_tui_ip_stack_cancel_keeps_config(tmp_path, monkeypatch):
+    app = make_tui(tmp_path, monkeypatch)
+
+    async def exercise():
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            await pilot.click("#btn-ipv4")
+            await pilot.pause()
+            assert isinstance(app.screen, tui.ConfirmScreen)
+            await pilot.click("#confirm-no")
+            await pilot.pause()
+            assert not isinstance(app.screen, tui.ConfirmScreen)
+            assert not app._busy
+            assert network.get_sing_box_ip_stack(store.load_config(app.config_path), "tun-in") == "dual"
+
+    asyncio.run(exercise())
+
+
+def test_tui_node_filter_narrows_table_and_selects_filtered(tmp_path, monkeypatch):
+    app = make_tui(tmp_path, monkeypatch)
+
+    async def exercise():
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            table = app.query_one("#node-table", tui.DataTable)
+            assert table.row_count == 2
+            await pilot.click("#node-filter")
+            await pilot.press("b")
+            await pilot.pause()
+            assert table.row_count == 1
+            assert app.visible_nodes == ["node-b"]
+            # 过滤后的序号映射到正确的节点
+            app._select_node_by_index(0)
+            await wait_until(lambda: not app._busy)
+            assert app.current_node == "node-b"
+
+    asyncio.run(exercise())
+
+
+def test_tui_help_screen_opens_and_closes(tmp_path, monkeypatch):
+    app = make_tui(tmp_path, monkeypatch)
+
+    async def exercise():
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            app.action_show_help()
+            await pilot.pause()
+            assert isinstance(app.screen, tui.HelpScreen)
+            await pilot.click("#help-close")
+            await pilot.pause()
+            assert not isinstance(app.screen, tui.HelpScreen)
+
+    asyncio.run(exercise())
+
+
+def test_tui_focus_filter_action_focuses_input(tmp_path, monkeypatch):
+    app = make_tui(tmp_path, monkeypatch)
+
+    async def exercise():
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            app.action_focus_filter()
+            await pilot.pause()
+            assert app.focused is app.query_one("#node-filter", tui.Input)
 
     asyncio.run(exercise())
 
