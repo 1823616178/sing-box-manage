@@ -34,6 +34,52 @@ class SaveResult:
     previous_config: dict[str, Any] | None = None
 
 
+@dataclass(frozen=True)
+class NodeInfo:
+    """Structured metadata extracted from an outbound definition."""
+
+    tag: str
+    protocol: str = "unknown"
+    server: str = ""
+    server_port: int | None = None
+    tls_enabled: bool = False
+    server_name: str = ""
+    transport_type: str = ""
+    congestion_control: str = ""
+    detour: str = ""
+
+    @property
+    def endpoint(self) -> str:
+        if not self.server:
+            return "本地/内置"
+        if self.server_port:
+            return f"{self.server}:{self.server_port}"
+        return self.server
+
+    @property
+    def badge(self) -> str:
+        proto = self.protocol.upper()
+        extras: list[str] = []
+        if self.transport_type:
+            extras.append(self.transport_type)
+        if self.congestion_control:
+            extras.append(self.congestion_control)
+        if self.tls_enabled:
+            extras.append("tls")
+        if extras:
+            return f"{proto} · {'+'.join(extras)}"
+        return proto
+
+
+@dataclass(frozen=True)
+class ConfigHealthIssue:
+    """Diagnostic item discovered when inspecting a sing-box configuration."""
+
+    level: str  # "warning" | "info" | "error"
+    code: str
+    message: str
+
+
 def resolve_config_path(path: Path) -> Path:
     """Use the same real destination for reads, locks, backups and writes."""
 
@@ -52,16 +98,28 @@ def validate_config_structure(data: object) -> None:
     if not isinstance(data, dict):
         raise ValueError("配置文件根节点必须是 JSON 对象")
 
-    for key in ("route", "dns"):
+    for key in ("route", "dns", "log", "experimental"):
         if key in data and not isinstance(data[key], dict):
             raise ValueError(f"{key} 字段必须是 JSON 对象")
 
-    for key in ("inbounds", "outbounds"):
+    for key in ("inbounds", "outbounds", "http_clients", "endpoints"):
         if key in data and not isinstance(data[key], list):
             raise ValueError(f"{key} 字段必须是数组")
         for idx, item in enumerate(data.get(key, [])):
             if not isinstance(item, dict):
                 raise ValueError(f"{key}[{idx}] 必须是 JSON 对象")
+
+    dns = data.get("dns")
+    if isinstance(dns, dict):
+        for subkey in ("servers", "rules"):
+            if subkey in dns and not isinstance(dns[subkey], list):
+                raise ValueError(f"dns.{subkey} 字段必须是数组")
+
+    route = data.get("route")
+    if isinstance(route, dict):
+        for subkey in ("rules", "rule_set"):
+            if subkey in route and not isinstance(route[subkey], list):
+                raise ValueError(f"route.{subkey} 字段必须是数组")
 
 
 def fsync_directory(path: Path) -> None:
@@ -150,6 +208,190 @@ def index_inbounds(config: dict[str, Any]) -> dict[str, dict[str, Any]]:
         if isinstance(inbound, dict) and isinstance(tag := inbound.get("tag"), str) and tag:
             inbounds[tag] = inbound
     return inbounds
+
+
+def index_outbounds(config: dict[str, Any] | None) -> dict[str, dict[str, Any]]:
+    """Index all outbounds by tag for fast lookup."""
+
+    if not isinstance(config, dict):
+        return {}
+    outbounds: dict[str, dict[str, Any]] = {}
+    for outbound in config.get("outbounds", []):
+        if isinstance(outbound, dict) and isinstance(tag := outbound.get("tag"), str) and tag:
+            outbounds[tag] = outbound
+    return outbounds
+
+
+def describe_outbound_node(config: dict[str, Any] | None, node_tag: str) -> NodeInfo:
+    """Extract rich protocol, endpoint and transport details for a node tag."""
+
+    outbound = index_outbounds(config).get(node_tag)
+    if not isinstance(outbound, dict):
+        return NodeInfo(tag=node_tag)
+
+    protocol = str(outbound.get("type") or "unknown")
+    server = str(outbound.get("server") or "").strip()
+    raw_port = outbound.get("server_port")
+    server_port = int(raw_port) if isinstance(raw_port, int) and not isinstance(raw_port, bool) else None
+
+    tls = outbound.get("tls")
+    tls_enabled = bool(isinstance(tls, dict) and tls.get("enabled"))
+    server_name = str(tls.get("server_name") or "").strip() if isinstance(tls, dict) else ""
+
+    transport = outbound.get("transport")
+    transport_type = ""
+    if isinstance(transport, dict) and transport.get("type"):
+        transport_type = str(transport.get("type"))
+    elif isinstance(outbound.get("obfs"), dict) and outbound["obfs"].get("type"):
+        transport_type = f"obfs:{outbound['obfs']['type']}"
+    elif isinstance(tls, dict) and isinstance(tls.get("alpn"), list) and tls["alpn"]:
+        transport_type = "/".join(str(x) for x in tls["alpn"])
+
+    congestion = str(outbound.get("congestion_control") or "").strip()
+    detour = str(outbound.get("detour") or "").strip()
+
+    return NodeInfo(
+        tag=node_tag,
+        protocol=protocol,
+        server=server,
+        server_port=server_port,
+        tls_enabled=tls_enabled,
+        server_name=server_name,
+        transport_type=transport_type,
+        congestion_control=congestion,
+        detour=detour,
+    )
+
+
+def _collect_referenced_rule_sets(rules: list[Any]) -> set[str]:
+    referenced: set[str] = set()
+    for rule in rules:
+        if not isinstance(rule, dict):
+            continue
+        rs = rule.get("rule_set")
+        if isinstance(rs, str) and rs:
+            referenced.add(rs)
+        elif isinstance(rs, list):
+            referenced.update(str(item) for item in rs if isinstance(item, str) and item)
+    return referenced
+
+
+def inspect_config_health(
+    config: dict[str, Any] | None,
+    selector_tag: str = DEFAULT_SELECTOR_TAG,
+    mixed_tag: str = DEFAULT_MIXED_TAG,
+    tun_tag: str = DEFAULT_TUN_TAG,
+) -> list[ConfigHealthIssue]:
+    """Perform static diagnostics on a sing-box configuration."""
+
+    if not isinstance(config, dict):
+        return [ConfigHealthIssue("error", "invalid_root", "配置未加载或根节点无效")]
+
+    issues: list[ConfigHealthIssue] = []
+    inbounds = index_inbounds(config)
+    outbounds = index_outbounds(config)
+
+    selector = find_proxy_selector(config, selector_tag)
+    if not selector:
+        issues.append(
+            ConfigHealthIssue("error", "missing_selector", f"未找到 tag={selector_tag} 的 selector 出站")
+        )
+    else:
+        candidates = [str(x) for x in selector.get("outbounds", []) if isinstance(x, str)]
+        default_node = selector.get("default")
+        if isinstance(default_node, str) and default_node and default_node not in candidates:
+            issues.append(
+                ConfigHealthIssue(
+                    "warning",
+                    "invalid_default_node",
+                    f"selector 默认节点 [{default_node}] 不在候选列表中",
+                )
+            )
+        missing_targets = [tag for tag in candidates if tag not in outbounds]
+        if missing_targets:
+            issues.append(
+                ConfigHealthIssue(
+                    "error",
+                    "missing_outbound_targets",
+                    f"selector 引用了未定义的出站节点: {', '.join(missing_targets)}",
+                )
+            )
+
+    if tun_tag not in inbounds:
+        issues.append(ConfigHealthIssue("warning", "missing_tun", f"未配置 tag={tun_tag} 的 TUN 入站"))
+    if mixed_tag not in inbounds:
+        issues.append(
+            ConfigHealthIssue(
+                "info",
+                "pure_tun_mode",
+                f"当前为纯 TUN 配置（未定义 {mixed_tag}），切换到系统代理时将自动按需补充",
+            )
+        )
+
+    # Check DNS strategy vs TUN address family consistency
+    dns = config.get("dns", {})
+    dns_strategy = dns.get("strategy") if isinstance(dns, dict) else None
+    tun = inbounds.get(tun_tag)
+    if isinstance(tun, dict):
+        raw_addr = tun.get("address", [])
+        addrs = [raw_addr] if isinstance(raw_addr, str) else (raw_addr if isinstance(raw_addr, list) else [])
+        has_v4 = any("." in str(a) for a in addrs)
+        has_v6 = any(":" in str(a) for a in addrs)
+        if dns_strategy == "ipv4_only" and has_v6:
+            issues.append(
+                ConfigHealthIssue(
+                    "warning",
+                    "dns_tun_stack_mismatch",
+                    "DNS 策略为 ipv4_only，但 TUN 仍分配了 IPv6 地址（可能导致 IPv6 流量泄漏或状态显示未知）",
+                )
+            )
+        elif dns_strategy == "ipv6_only" and has_v4:
+            issues.append(
+                ConfigHealthIssue(
+                    "warning",
+                    "dns_tun_stack_mismatch",
+                    "DNS 策略为 ipv6_only，但 TUN 仍分配了 IPv4 地址",
+                )
+            )
+
+    # Check unused or plaintext HTTP rule_sets
+    route = config.get("route", {})
+    if isinstance(route, dict):
+        rule_sets = route.get("rule_set", [])
+        if isinstance(rule_sets, list) and rule_sets:
+            used_rs = _collect_referenced_rule_sets(
+                (route.get("rules") if isinstance(route.get("rules"), list) else [])
+                + (dns.get("rules") if isinstance(dns, dict) and isinstance(dns.get("rules"), list) else [])
+            )
+            defined_tags = [
+                str(rs.get("tag"))
+                for rs in rule_sets
+                if isinstance(rs, dict) and isinstance(rs.get("tag"), str)
+            ]
+            unused_tags = [tag for tag in defined_tags if tag not in used_rs]
+            if unused_tags:
+                issues.append(
+                    ConfigHealthIssue(
+                        "info",
+                        "unused_rule_sets",
+                        f"存在未被引用的冗余规则集: {', '.join(unused_tags)}",
+                    )
+                )
+            http_urls = [
+                str(rs.get("tag"))
+                for rs in rule_sets
+                if isinstance(rs, dict) and str(rs.get("url", "")).startswith("http://")
+            ]
+            if http_urls:
+                issues.append(
+                    ConfigHealthIssue(
+                        "info",
+                        "plaintext_ruleset_url",
+                        f"{len(http_urls)} 个远程规则集使用明文 HTTP 链接",
+                    )
+                )
+
+    return issues
 
 
 def run_sing_box_check(
@@ -293,10 +535,11 @@ def save_config(
     )
 
 
-def format_save_note(save_result: SaveResult) -> str:
+def format_save_note(save_result: SaveResult, *, short: bool = False) -> str:
     notes = []
     if save_result.backup_path:
-        notes.append(f"备份: {save_result.backup_path}")
+        backup_display = save_result.backup_path.name if short else str(save_result.backup_path)
+        notes.append(f"备份: {backup_display}")
     if save_result.validation_message:
         notes.append(save_result.validation_message)
     if save_result.cleaned_backups:

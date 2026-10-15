@@ -1,9 +1,13 @@
-"""Bounded system commands and runtime diagnostics."""
+"""Bounded system commands, node latency probing and runtime diagnostics."""
 
 import ipaddress
 import os
 import shutil
+import socket
 import subprocess
+import time
+from collections.abc import Sequence
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from .config import format_exception
@@ -169,3 +173,53 @@ def get_dns_tun_status(interface_name: str) -> str:
     if "DNS Domain: ~." in text and "DNS Servers:" in text:
         return "是"
     return "否"
+
+
+def probe_tcp_latency(host: str, port: int | None, timeout: float = 2.0) -> int | None:
+    """Measure TCP handshake latency in milliseconds, or None on failure."""
+
+    host = host.strip()
+    if not host or not port or port <= 0 or port > 65535:
+        return None
+    start = time.perf_counter()
+    try:
+        with socket.create_connection((host, port), timeout=timeout):
+            elapsed_ms = round((time.perf_counter() - start) * 1000)
+            return max(1, elapsed_ms)
+    except OSError:
+        return None
+
+
+def measure_nodes_latency(
+    endpoints: Sequence[tuple[str, str, int | None]],
+    timeout: float = 2.0,
+    max_workers: int = 8,
+) -> dict[str, int | None]:
+    """Concurrently probe TCP latency for a sequence of (tag, host, port) items."""
+
+    if not endpoints:
+        return {}
+    workers = max(1, min(max_workers, len(endpoints)))
+
+    def _probe(item: tuple[str, str, int | None]) -> tuple[str, int | None]:
+        tag, host, port = item
+        return tag, probe_tcp_latency(host, port, timeout=timeout)
+
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        return dict(pool.map(_probe, endpoints))
+
+
+def format_latency_badge(latency_ms: int | None, tested: bool = True) -> str:
+    """Render a compact latency string with signal bars."""
+
+    if not tested:
+        return "— 待测速"
+    if latency_ms is None:
+        return "🔴 超时  ____"
+    if latency_ms < 80:
+        return f"🟢 {latency_ms:>3}ms ▂▄▆█"
+    if latency_ms < 180:
+        return f"🟡 {latency_ms:>3}ms ▂▄▆_"
+    if latency_ms < 350:
+        return f"🟠 {latency_ms:>3}ms ▂▄__"
+    return f"🔴 {latency_ms:>3}ms ▂___"

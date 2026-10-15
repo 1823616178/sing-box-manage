@@ -1,0 +1,488 @@
+{
+  "log": {
+    "level": "info",
+    "timestamp": true
+  },
+  "dns": {
+    "servers": [
+      {
+        "type": "https",
+        "tag": "dns_proxy",
+        "server": "1.1.1.1",
+        "detour": "proxy"
+      },
+      {
+        "type": "h3",
+        "tag": "dns_direct",
+        "server": "dns.alidns.com",
+        "domain_resolver": "dns_resolver"
+      },
+      {
+        "type": "udp",
+        "tag": "dns_resolver",
+        "server": "223.5.5.5"
+      }
+    ],
+    "rules": [
+      {
+        "rule_set": "geosite-category-ads-all",
+        "action": "predefined",
+        "rcode": "NOERROR"
+      },
+      {
+        "rule_set": "geosite-geolocation-!cn",
+        "server": "dns_proxy"
+      },
+      {
+        "rule_set": [
+          "geosite-cn",
+          "geosite-private"
+        ],
+        "server": "dns_direct"
+      }
+    ],
+    "final": "dns_proxy",
+    "strategy": "ipv4_only"
+  },
+  "http_clients": [
+    {
+      "tag": "via-proxy",
+      "detour": "proxy"
+    },
+    {
+      "tag": "direct-dl"
+    }
+  ],
+  "inbounds": [
+    {
+      "type": "mixed",
+      "tag": "mixed-in",
+      "listen": "127.0.0.1",
+      "listen_port": 2080,
+      "set_system_proxy": false
+    },
+    {
+      "type": "tun",
+      "tag": "tun-in",
+      "interface_name": "tun0",
+      "address": [
+        "172.18.0.1/30"
+      ],
+      "iproute2_table_index": 2022,
+      "iproute2_rule_index": 9000,
+      "auto_redirect": false,
+      "auto_route": true,
+      "strict_route": false,
+      "udp_timeout": "5m"
+    }
+  ],
+  "outbounds": [
+    {
+      "type": "selector",
+      "tag": "proxy",
+      "outbounds": [
+        "日本tuic",
+        "美国-tuic",
+        "美国-vless",
+        "英国-hysteria2",
+        "英国-tuic",
+        "英国-vless",
+        "英国-naive",
+        "英国-anytls",
+        "水滴-vless"
+      ],
+      "default": "日本tuic",
+      "interrupt_exist_connections": true
+    },
+    {
+      "type": "tuic",
+      "tag": "日本tuic",
+      "server": "tuic.rymaker.cn",
+      "server_port": 50005,
+      "uuid": "dae1b665-cb87-4b42-aad5-803aceaf4481",
+      "password": "tsz19961997412",
+      "congestion_control": "bbr",
+      "udp_relay_mode": "native",
+      "zero_rtt_handshake": false,
+      "heartbeat": "10s",
+      "tls": {
+        "enabled": true,
+        "server_name": "tuic.rymaker.cn",
+        "alpn": [
+          "h3"
+        ]
+      }
+    },
+    {
+      "type": "tuic",
+      "tag": "美国-tuic",
+      "server": "meiguooc.rymaker.com",
+      "server_port": 50005,
+      "uuid": "dae1b665-cb87-4b42-aad5-803aceaf4481",
+      "password": "tsz19961997412",
+      "congestion_control": "bbr",
+      "udp_relay_mode": "native",
+      "zero_rtt_handshake": false,
+      "heartbeat": "10s",
+      "tls": {
+        "enabled": true,
+        "server_name": "meiguooc.rymaker.com",
+        "alpn": [
+          "h3"
+        ]
+      }
+    },
+    {
+      "type": "vless",
+      "tag": "美国-vless",
+      "server": "meiguooc.rymaker.com",
+      "server_port": 50818,
+      "uuid": "408c814e-f70a-4d16-b3b3-8182bb70211d",
+      "transport": {
+        "type": "ws",
+        "path": "/GunService",
+        "max_early_data": 2048,
+        "early_data_header_name": "Sec-WebSocket-Protocol"
+      },
+      "tls": {
+        "enabled": true,
+        "server_name": "meiguooc.rymaker.com"
+      }
+    },
+    {
+      "type": "hysteria2",
+      "tag": "英国-hysteria2",
+      "server": "yingguo.rymaker.cn",
+      "server_port": 58443,
+      "password": "tsz19961997412",
+      "obfs": {
+        "type": "salamander",
+        "password": "tsz19961997412"
+      },
+      "tls": {
+        "enabled": true,
+        "server_name": "yingguo.rymaker.cn",
+        "alpn": [
+          "h3"
+        ]
+      }
+    },
+    {
+      "type": "tuic",
+      "tag": "英国-tuic",
+      "server": "yingguo.rymaker.cn",
+      "server_port": 50005,
+      "uuid": "dae1b665-cb87-4b42-aad5-803aceaf4481",
+      "password": "tsz19961997412",
+      "congestion_control": "bbr",
+      "zero_rtt_handshake": false,
+      "tls": {
+        "enabled": true,
+        "server_name": "yingguo.rymaker.cn",
+        "alpn": [
+          "h3"
+        ]
+      },
+      "udp_relay_mode": "native",
+      "heartbeat": "10s"
+    },
+    {
+      "type": "vless",
+      "tag": "英国-vless",
+      "server": "yingguo.rymaker.cn",
+      "server_port": 50818,
+      "uuid": "408c814e-f70a-4d16-b3b3-8182bb70211d",
+      "transport": {
+        "type": "ws",
+        "path": "/GunService",
+        "max_early_data": 2048,
+        "early_data_header_name": "Sec-WebSocket-Protocol"
+      },
+      "tls": {
+        "enabled": true,
+        "server_name": "yingguo.rymaker.cn"
+      }
+    },
+    {
+      "type": "naive",
+      "tag": "英国-naive",
+      "server": "yingguo.rymaker.cn",
+      "server_port": 50819,
+      "username": "sun",
+      "password": "408c814e-f70a-4d16-b3b3-8182bb70211d",
+      "quic": false,
+      "tls": {
+        "enabled": true,
+        "server_name": "yingguo.rymaker.cn"
+      }
+    },
+    {
+      "type": "anytls",
+      "tag": "英国-anytls",
+      "server": "yingguo.rymaker.cn",
+      "server_port": 50820,
+      "password": "0Stt9HFUs8gZP2sX3cb6vYUnC6yuULwHNDeoev6LzbU=",
+      "tls": {
+        "enabled": true,
+        "server_name": "yingguo.rymaker.cn"
+      }
+    },
+    {
+      "type": "vless",
+      "tag": "水滴-vless",
+      "server": "shuidi.rymaker.com",
+      "server_port": 50818,
+      "uuid": "408c814e-f70a-4d16-b3b3-8182bb70211d",
+      "transport": {
+        "type": "ws",
+        "path": "/GunService",
+        "max_early_data": 2048,
+        "early_data_header_name": "Sec-WebSocket-Protocol"
+      },
+      "tls": {
+        "enabled": true,
+        "server_name": "shuidi.rymaker.com"
+      }
+    },
+    {
+      "type": "direct",
+      "tag": "direct"
+    }
+  ],
+  "route": {
+    "rules": [
+      {
+        "action": "sniff"
+      },
+      {
+        "protocol": "dns",
+        "action": "hijack-dns"
+      },
+      {
+        "ip_is_private": true,
+        "outbound": "direct"
+      },
+      {
+        "protocol": "quic",
+        "action": "reject"
+      },
+      {
+        "rule_set": [
+          "geosite-category-ads-all",
+          "category-httpdns"
+        ],
+        "domain_suffix": [
+          "ads.fmdisk.com",
+          "ads.feemoo.com",
+          "ads.google.com",
+          "afd.l.google.com",
+          "mobileads.google.com"
+        ],
+        "domain_keyword": [
+          "umeng",
+          "googleads"
+        ],
+        "action": "reject"
+      },
+      {
+        "ip_cidr": [
+          "1.1.1.1/32",
+          "1.0.0.1/32",
+          "8.8.8.8/32",
+          "8.8.4.4/32"
+        ],
+        "rule_set": [
+          "geosite-telegram",
+          "geoip-telegram"
+        ],
+        "domain_suffix": [
+          "github.global.ssl.fastly.net",
+          "assets-cdn.github.com",
+          "ampproject.org",
+          "ampproject.net",
+          "g.whatsapp.net",
+          "us-west-2.amazonaws.com",
+          "developer.apple.com",
+          "humblebundle.com",
+          "goo.gl",
+          "gvt1.com",
+          "youtu.be",
+          "ytimg.com",
+          "ggpht.com",
+          "steamcommunity-a.akamaihd.net",
+          "steamstore-a.akamaihd.net",
+          "fanatical.com",
+          "playartifact.com",
+          "steam-chat.com",
+          "steamcommunity.com",
+          "underlords.com"
+        ],
+        "domain_keyword": [
+          "appledaily",
+          "instagram",
+          "v2ex",
+          "github"
+        ],
+        "outbound": "proxy"
+      },
+      {
+        "ip_cidr": [
+          "45.121.184.0/24",
+          "103.10.124.0/23",
+          "103.28.54.0/24",
+          "146.66.152.0/24",
+          "146.66.155.0/24",
+          "153.254.86.0/24",
+          "155.133.224.0/22",
+          "155.133.230.0/24",
+          "155.133.232.0/23",
+          "155.133.234.0/24",
+          "155.133.236.0/22",
+          "155.133.240.0/23",
+          "155.133.244.0/23",
+          "155.133.246.0/24",
+          "155.133.248.0/21",
+          "162.254.192.0/21",
+          "185.25.182.0/23",
+          "190.217.32.0/22",
+          "192.69.96.0/22",
+          "205.196.6.0/24",
+          "208.64.200.0/22",
+          "208.78.164.0/22",
+          "205.185.194.0/24"
+        ],
+        "domain_suffix": [
+          ".cn",
+          "gdmf.apple.com",
+          "librespeed.cn",
+          "steamcdn-a.akamaihd.net",
+          "cm.steampowered.com",
+          "steamserver.net",
+          "cdn.mileweb.cs.steampowered.com.8686c.com",
+          "cdn-ws.content.steamchina.com",
+          "cdn-qc.content.steamchina.com",
+          "cdn-ali.content.steamchina.com",
+          "epicgames-download1-1251447533.file.myqcloud.com",
+          "dl.steam.clngaa.com",
+          "dl.steam.ksyna.com",
+          "st.dl.bscstorage.net",
+          "st.dl.eccdnx.com",
+          "st.dl.pinyuncloud.com",
+          "steampipe.steamcontent.tnkjmec.com",
+          "steampowered.com.8686c.com",
+          "steamstatic.com.8686c.com",
+          "wmsjsteam.com",
+          "xz.pphimalayanrt.com",
+          "steamcontent.com",
+          "steamusercontent.com"
+        ],
+        "domain_keyword": [
+          "moutai",
+          "sina",
+          "airdroid",
+          "announce",
+          "torrent",
+          "tracker"
+        ],
+        "rule_set": [
+          "geosite-apple-cn",
+          "geosite-category-games@cn",
+          "geosite-category-public-tracker",
+          "geosite-cn",
+          "geosite-private",
+          "geoip-cn"
+        ],
+        "outbound": "direct"
+      }
+    ],
+    "rule_set": [
+      {
+        "tag": "geosite-category-ads-all",
+        "type": "remote",
+        "format": "binary",
+        "url": "http://hysteria.rymaker.com/hysteria/rule/geosite-category-ads-all.srs",
+        "http_client": "direct-dl"
+      },
+      {
+        "tag": "category-httpdns",
+        "type": "remote",
+        "format": "binary",
+        "url": "http://hysteria.rymaker.com/hysteria/rule/category-httpdns.srs",
+        "http_client": "direct-dl"
+      },
+      {
+        "tag": "geosite-geolocation-!cn",
+        "type": "remote",
+        "format": "binary",
+        "url": "http://hysteria.rymaker.com/hysteria/rule/geosite-geolocation-%21cn.srs",
+        "http_client": "direct-dl"
+      },
+      {
+        "tag": "geosite-telegram",
+        "type": "remote",
+        "format": "binary",
+        "url": "http://hysteria.rymaker.com/hysteria/rule/telegram.geosite.srs",
+        "http_client": "direct-dl"
+      },
+      {
+        "tag": "geoip-telegram",
+        "type": "remote",
+        "format": "binary",
+        "url": "http://hysteria.rymaker.com/hysteria/rule/telegram.geoip.srs",
+        "http_client": "direct-dl"
+      },
+      {
+        "tag": "geosite-apple-cn",
+        "type": "remote",
+        "format": "binary",
+        "url": "http://hysteria.rymaker.com/hysteria/rule/geosite-apple-cn.srs",
+        "http_client": "direct-dl"
+      },
+      {
+        "tag": "geosite-category-games@cn",
+        "type": "remote",
+        "format": "binary",
+        "url": "http://hysteria.rymaker.com/hysteria/rule/geosite-category-games%40cn.srs",
+        "http_client": "direct-dl"
+      },
+      {
+        "tag": "geosite-category-public-tracker",
+        "type": "remote",
+        "format": "binary",
+        "url": "http://hysteria.rymaker.com/hysteria/rule/category-public-tracker.srs",
+        "http_client": "direct-dl"
+      },
+      {
+        "tag": "geosite-cn",
+        "type": "remote",
+        "format": "binary",
+        "url": "http://hysteria.rymaker.com/hysteria/rule/geosite-cn.srs",
+        "http_client": "direct-dl"
+      },
+      {
+        "tag": "geoip-cn",
+        "type": "remote",
+        "format": "binary",
+        "url": "http://hysteria.rymaker.com/hysteria/rule/geoip-cn.srs",
+        "http_client": "direct-dl"
+      },
+      {
+        "tag": "geosite-private",
+        "type": "remote",
+        "format": "binary",
+        "url": "http://hysteria.rymaker.com/hysteria/rule/private.srs",
+        "http_client": "direct-dl"
+      }
+    ],
+    "final": "proxy",
+    "auto_detect_interface": true,
+    "default_domain_resolver": "dns_direct",
+    "default_http_client": "via-proxy"
+  },
+  "experimental": {
+    "cache_file": {
+      "enabled": true,
+      "store_rdrc": true
+    }
+  }
+}

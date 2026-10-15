@@ -861,3 +861,128 @@ def test_tui_reapplies_cached_node_and_mode_to_latest_config(tmp_path, monkeypat
             assert network.get_proxy_mode(store.load_config(app.config_path), "mixed-in", "tun-in") == "system"
 
     asyncio.run(exercise())
+
+
+def test_describe_outbound_node_and_health_on_new_config():
+    config = {
+        "log": {"level": "info", "timestamp": True},
+        "dns": {
+            "servers": [{"type": "https", "tag": "dns_proxy", "server": "1.1.1.1", "detour": "proxy"}],
+            "rules": [{"rule_set": ["geosite-cn", "geosite-private"], "server": "dns_direct"}],
+            "strategy": "ipv4_only",
+        },
+        "http_clients": [{"tag": "via-proxy", "detour": "proxy"}, {"tag": "direct-dl"}],
+        "inbounds": [
+            {
+                "type": "tun",
+                "tag": "tun-in",
+                "interface_name": "tun0",
+                "address": ["172.18.0.1/30", "fdfe:dcba:9876::1/126"],
+                "iproute2_table_index": 2022,
+                "iproute2_rule_index": 9000,
+                "auto_redirect": False,
+                "auto_route": True,
+                "strict_route": False,
+            }
+        ],
+        "outbounds": [
+            {
+                "type": "selector",
+                "tag": "proxy",
+                "outbounds": ["日本tuic", "英国-hysteria2", "美国-vless"],
+                "default": "日本tuic",
+            },
+            {
+                "type": "tuic",
+                "tag": "日本tuic",
+                "server": "tuic.rymaker.cn",
+                "server_port": 50005,
+                "congestion_control": "bbr",
+                "tls": {"enabled": True, "server_name": "tuic.rymaker.cn", "alpn": ["h3"]},
+            },
+            {
+                "type": "hysteria2",
+                "tag": "英国-hysteria2",
+                "server": "yingguo.rymaker.cn",
+                "server_port": 58443,
+                "obfs": {"type": "salamander", "password": "secret"},
+                "tls": {"enabled": True, "server_name": "yingguo.rymaker.cn", "alpn": ["h3"]},
+            },
+            {
+                "type": "vless",
+                "tag": "美国-vless",
+                "server": "meiguooc.rymaker.com",
+                "server_port": 50818,
+                "transport": {"type": "ws", "path": "/GunService"},
+                "tls": {"enabled": True, "server_name": "meiguooc.rymaker.com"},
+            },
+        ],
+        "route": {
+            "rules": [{"rule_set": ["geosite-cn", "geosite-private"], "outbound": "direct"}],
+            "rule_set": [
+                {"tag": "geosite-cn", "type": "remote", "url": "http://example.com/cn.srs"},
+                {"tag": "geosite-private", "type": "remote", "url": "http://example.com/private.srs"},
+                {"tag": "geoip-private", "type": "remote", "url": "http://example.com/geoip-private.srs"},
+            ],
+            "final": "proxy",
+        },
+        "experimental": {"cache_file": {"enabled": True}},
+    }
+
+    store.validate_config_structure(config)
+    tuic_info = store.describe_outbound_node(config, "日本tuic")
+    assert tuic_info.protocol == "tuic"
+    assert tuic_info.endpoint == "tuic.rymaker.cn:50005"
+    assert "TUIC" in tuic_info.badge and "bbr" in tuic_info.badge
+
+    hy2_info = store.describe_outbound_node(config, "英国-hysteria2")
+    assert "obfs:salamander" in hy2_info.badge
+
+    issues = store.inspect_config_health(config)
+    codes = {issue.code for issue in issues}
+    assert "dns_tun_stack_mismatch" in codes
+    assert "pure_tun_mode" in codes
+    assert "unused_rule_sets" in codes
+    assert "DNS仅v4/TUN双栈" in network.describe_ip_stack_state(config, "tun-in")
+
+    # Switching pure-TUN config to system mode auto-creates mixed-in and preserves custom iproute2 flags
+    network.set_proxy_mode(
+        config,
+        "system",
+        "mixed-in",
+        "tun-in",
+        auto_create_mixed=True,
+        preserve_custom_tun_flags=True,
+    )
+    assert network.get_proxy_mode(config, "mixed-in", "tun-in") == "system"
+    network.set_proxy_mode(
+        config,
+        "tun",
+        "mixed-in",
+        "tun-in",
+        auto_create_mixed=True,
+        preserve_custom_tun_flags=True,
+    )
+    tun = network.get_tun_inbound(config, "tun-in")
+    assert tun["auto_route"] is True
+    assert tun["strict_route"] is False
+    assert tun["auto_redirect"] is False
+
+
+def test_holo_stage_3d_renders_all_modes():
+    stage = tui.HoloStage3D()
+    for _ in range(3):
+        text = stage.render_3d_frame()
+        rendered = str(text)
+        assert "节点:" in rendered
+        assert "频谱:" in rendered
+        stage.cycle_mode()
+
+
+def test_cli_doctor_and_ping_commands(tmp_path, monkeypatch, capsys):
+    path = write_config(tmp_path, base_config())
+    assert cli.main(["--config", str(path), "--doctor"]) == 0
+    monkeypatch.setattr(runtime, "probe_tcp_latency", lambda host, port, timeout=2.0: 42)
+    assert cli.main(["--config", str(path), "--ping"]) == 0
+    out = capsys.readouterr().out
+    assert "node-a" in out

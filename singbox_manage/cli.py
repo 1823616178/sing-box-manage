@@ -12,10 +12,14 @@ from .config import (
     DEFAULT_SELECTOR_TAG,
     DEFAULT_SERVICE_NAME,
     DEFAULT_TUN_TAG,
+    describe_outbound_node,
+    find_proxy_selector,
     format_save_note,
+    inspect_config_health,
+    load_config,
 )
 from .network import format_ip_stack_mode, save_ip_stack_config
-from .runtime import reload_sing_box
+from .runtime import format_latency_badge, measure_nodes_latency, reload_sing_box
 from .tui import SingBoxTUI
 
 
@@ -53,6 +57,66 @@ def run_set_ip_stack_command(
         return 0
     print(f"IP 栈配置已保存但服务重载失败: {msg}。{note}", file=sys.stderr)
     return 1
+
+
+def run_doctor_command(
+    config_path: Path,
+    selector_tag: str,
+    mixed_tag: str,
+    tun_tag: str,
+) -> int:
+    """Inspect configuration structure and report actionable optimization findings."""
+
+    try:
+        config = load_config(config_path)
+    except Exception as error:
+        print(f"读取配置失败: {error}", file=sys.stderr)
+        return 1
+
+    issues = inspect_config_health(
+        config,
+        selector_tag=selector_tag,
+        mixed_tag=mixed_tag,
+        tun_tag=tun_tag,
+    )
+    if not issues:
+        print("✅ 配置健康检查通过，未发现潜在问题")
+        return 0
+
+    has_error = False
+    for issue in issues:
+        icon = "❌" if issue.level == "error" else ("⚠️" if issue.level == "warning" else "ℹ️")
+        print(f"{icon} [{issue.code}] {issue.message}")
+        if issue.level == "error":
+            has_error = True
+    return 1 if has_error else 0
+
+
+def run_ping_command(config_path: Path, selector_tag: str) -> int:
+    """Measure TCP handshake latency for all candidate nodes in the selector."""
+
+    try:
+        config = load_config(config_path)
+    except Exception as error:
+        print(f"读取配置失败: {error}", file=sys.stderr)
+        return 1
+
+    selector = find_proxy_selector(config, selector_tag)
+    if not selector:
+        print(f"未找到 tag={selector_tag} 的 selector", file=sys.stderr)
+        return 1
+
+    nodes = [str(n) for n in selector.get("outbounds", []) if isinstance(n, str)]
+    infos = [describe_outbound_node(config, tag) for tag in nodes]
+    endpoints = [(info.tag, info.server, info.server_port) for info in infos]
+    results = measure_nodes_latency(endpoints)
+
+    current = selector.get("default", "")
+    for info in infos:
+        mark = "*" if info.tag == current else " "
+        badge = format_latency_badge(results.get(info.tag), tested=True)
+        print(f"{mark} {info.tag:<16} | {info.badge:<18} | {info.endpoint:<28} | {badge}")
+    return 0
 
 
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
@@ -99,6 +163,16 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         "--ip-stack",
         choices=("ipv4", "ipv6", "dual"),
         help="切换 sing-box TUN IP 栈：ipv4=IPv4 only，ipv6=IPv6 only，dual=IPv4+IPv6",
+    )
+    parser.add_argument(
+        "--doctor",
+        action="store_true",
+        help="静态诊断配置文件健康度（检查 IP 栈一致性、冗余规则集等）",
+    )
+    parser.add_argument(
+        "--ping",
+        action="store_true",
+        help="并发测试所有代理节点的 TCP 握手延迟",
     )
     parser.add_argument(
         "--no-reload",
@@ -180,6 +254,17 @@ def main(argv: Sequence[str] | None = None) -> int:
     if error:
         print(error, file=sys.stderr)
         return 1
+
+    if getattr(args, "doctor", False):
+        return run_doctor_command(
+            config_path=config_path,
+            selector_tag=args.selector_tag,
+            mixed_tag=args.mixed_tag,
+            tun_tag=args.tun_tag,
+        )
+
+    if getattr(args, "ping", False):
+        return run_ping_command(config_path=config_path, selector_tag=args.selector_tag)
 
     if ip_stack_mode:
         return execute_ip_stack_cli(args, config_path, ip_stack_mode)

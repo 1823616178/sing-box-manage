@@ -1,6 +1,13 @@
 # singbox-manage
 
-用于管理 sing-box 节点、系统代理/TUN 模式和 IP 栈的 Textual TUI/CLI，适用于 Linux/systemd 环境。
+用于管理 sing-box 节点、系统代理/TUN 模式、节点并发测速、配置健康诊断和 IP 栈的 Textual 3D 赛博控制台（TUI/CLI），适用于 Linux/systemd 环境。
+
+## 特性亮点
+
+- **3D 全息动效中枢 (`HoloStage3D`)**：内置基于 Unicode Braille 子像素（2×4 点阵）与 Z-Buffer 深度着色的实时 3D 透视渲染引擎，支持 **3D 赛博超立方 (`tesseract`)**、**3D 全球节点星环 (`globe`)**、**3D 量子隧道流 (`helix`)** 三种全息模型实时旋转（按 `v` 键切换），并在节点切换或测速时自动触发 `HYPER` 加速与动态频谱脉冲。
+- **多维节点矩阵与并发测速**：自动解析 `tuic`、`hysteria2`、`vless`、`naive`、`anytls` 等协议参数、传输层（`h3`/`ws`/`obfs`）、拥塞控制（`bbr`）与服务器端点；支持按 `p` 键并发测试全部节点 TCP 握手延迟，或按 `f` 键一键优选最快节点。
+- **纯 TUN 与自定义路由表无损兼容**：完美兼容仅配置 `tun-in`（如 `tun0` + 自定义 `iproute2_table_index`）的新版配置，按需自动补充 `mixed-in` 入站，保留用户原有的 `strict_route: false` / `auto_redirect: false` 设置。
+- **配置静态健康诊断 (`--doctor`)**：自动检测 `dns.strategy` 与 `tun.address` 双栈状态不一致、未引用的冗余 `rule_set`、明文 HTTP 规则链接等潜在问题。
 
 ## 安装
 
@@ -13,24 +20,22 @@ python -m venv .venv
 
 ## 使用
 
-启动 TUI：
+启动 3D 交互式 TUI：
 
 ```bash
 sudo .venv/bin/singbox-tui --config /etc/sing-box/config.json
 ```
 
-切换 IP 栈：
+命令行切换 IP 栈、静态诊断与并发测速：
 
 ```bash
-sudo .venv/bin/singbox-tui --ip-stack ipv4
-sudo .venv/bin/singbox-tui --ip-stack dual
+sudo .venv/bin/singbox-tui --config /etc/sing-box/config.json --ip-stack ipv4
+sudo .venv/bin/singbox-tui --config /etc/sing-box/config.json --ip-stack dual
+.venv/bin/singbox-tui --config /etc/sing-box/config.json --doctor
+.venv/bin/singbox-tui --config /etc/sing-box/config.json --ping
 ```
 
 工具会在实际配置文件旁创建 `config.json.singbox-tui-state.json`，用于保存暂时禁用的自定义 IPv4/IPv6 地址和排除路由，来回切换不会丢失配置。配置路径为符号链接时，保存、备份和状态文件都使用链接指向的实际路径。
-
-保存会保留原文件的权限、属主和属组，在文件锁内重新读取最新配置，并先运行 `sing-box check` 再原子替换。没有变化时不创建配置备份，也不重载服务。切换操作保留配置原有的默认路由。
-
-需要系统安装 `sing-box`；缺少命令或校验失败时中止保存。`--no-check` 可显式跳过校验，`--no-reload` 可只保存配置。TUN 设置变更使用服务重启，其他变更先尝试重载，失败时再重启。
 
 ## 开发
 
@@ -41,5 +46,3 @@ sudo .venv/bin/singbox-tui --ip-stack dual
 .venv/bin/ruff format --check .
 .venv/bin/mypy
 ```
-
-实现按职责分为 `config.py`（配置存储）、`network.py`（代理模式与 IP 栈）、`runtime.py`（服务控制与状态采集）、`tui.py`（界面）和 `cli.py`（命令行）。`app.py` 与根目录的 `singbox-tui.py` 保留为兼容启动入口。

@@ -22,6 +22,8 @@ from .config import (
 
 DEFAULT_TUN_IPV4_ADDRESS = "172.19.0.1/30"
 DEFAULT_TUN_IPV6_ADDRESS = "fdfe:dcba:9876::1/126"
+DEFAULT_MIXED_LISTEN = "127.0.0.1"
+DEFAULT_MIXED_PORT = 2080
 IP_STACK_LABELS = {
     "ipv4": "IPv4 only",
     "ipv6": "IPv6 only",
@@ -98,7 +100,7 @@ def tun_settings_changed(
     new_config: dict | None,
     tun_tag: str,
 ) -> bool:
-    """判断两次配置之间 TUN 入站设置是否发生变化。
+    """判断两次配置之间 TUN 入站设置或 DNS IP 策略是否发生变化。
 
     TUN 设置变更（如 address、auto_route、strict_route 等）通常需要
     重启 sing-box 才能重新创建 TUN 接口并应用新的路由/重定向规则，
@@ -322,6 +324,27 @@ def get_sing_box_ip_stack(config: dict[str, Any] | None, tun_tag: str) -> str:
     return "unknown"
 
 
+def describe_ip_stack_state(config: dict[str, Any] | None, tun_tag: str) -> str:
+    """Return a user-friendly IP stack label including mismatch diagnostics."""
+
+    mode = get_sing_box_ip_stack(config, tun_tag)
+    if mode != "unknown" or not isinstance(config, dict):
+        return format_ip_stack_mode(mode)
+    try:
+        tun = get_tun_inbound(config, tun_tag)
+        ipv4_address, ipv6_address = split_ip_values(tun.get("address"))
+    except ValueError:
+        return format_ip_stack_mode("unknown")
+
+    dns = config.get("dns", {})
+    dns_strategy = dns.get("strategy") if isinstance(dns, dict) else None
+    if dns_strategy == "ipv4_only" and ipv4_address and ipv6_address:
+        return "未知 (DNS仅v4/TUN双栈)"
+    if dns_strategy == "ipv6_only" and ipv4_address and ipv6_address:
+        return "未知 (DNS仅v6/TUN双栈)"
+    return format_ip_stack_mode("unknown")
+
+
 def next_ip_stack_mode(current_mode: str) -> str:
     order = ("ipv4", "ipv6", "dual")
     if current_mode not in order:
@@ -333,22 +356,55 @@ def format_ip_stack_mode(mode: str) -> str:
     return IP_STACK_LABELS.get(mode, IP_STACK_LABELS["unknown"])
 
 
-def set_proxy_mode(data: dict[str, Any], mode: str, mixed_tag: str, tun_tag: str) -> dict[str, Any]:
+def set_proxy_mode(
+    data: dict[str, Any],
+    mode: str,
+    mixed_tag: str,
+    tun_tag: str,
+    *,
+    auto_create_mixed: bool = False,
+    preserve_custom_tun_flags: bool = False,
+) -> dict[str, Any]:
     if mode not in ("system", "tun"):
         raise ValueError(f"未知模式: {mode}")
 
     inbounds = index_inbounds(data)
     mixed = inbounds.get(mixed_tag)
     tun = inbounds.get(tun_tag)
-    if not mixed or not tun:
+
+    if not tun:
         raise ValueError(f"配置中缺少 {mixed_tag} 或 {tun_tag}")
+
+    if not mixed:
+        if not auto_create_mixed:
+            raise ValueError(f"配置中缺少 {mixed_tag} 或 {tun_tag}")
+        mixed = {
+            "type": "mixed",
+            "tag": mixed_tag,
+            "listen": DEFAULT_MIXED_LISTEN,
+            "listen_port": DEFAULT_MIXED_PORT,
+            "set_system_proxy": False,
+        }
+        inbound_list = data.setdefault("inbounds", [])
+        if isinstance(inbound_list, list):
+            inbound_list.insert(0, mixed)
 
     enable_tun = mode == "tun"
     mixed["set_system_proxy"] = not enable_tun
+
+    # Custom iproute2 routing setups (like iproute2_table_index / iproute2_rule_index)
+    # often intentionally set strict_route=False and auto_redirect=False.
+    has_custom_iproute2 = "iproute2_table_index" in tun or "iproute2_rule_index" in tun
     tun["auto_route"] = enable_tun
-    tun["strict_route"] = enable_tun
-    if "auto_redirect" in tun:
-        tun["auto_redirect"] = enable_tun
+    if not (preserve_custom_tun_flags and has_custom_iproute2):
+        tun["strict_route"] = enable_tun
+        if "auto_redirect" in tun:
+            tun["auto_redirect"] = enable_tun
+    elif not enable_tun:
+        tun["strict_route"] = False
+        if "auto_redirect" in tun:
+            tun["auto_redirect"] = False
+
     return data
 
 
